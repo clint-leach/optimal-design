@@ -6,247 +6,214 @@
 ###               2.50 mins : 15 potential designs, 1,000,000 MCMC samples
 #########################################################################
 
+# Load/Install required packages and functions =================================
+library(doParallel)
+library(magrittr)
+library(plyr)
+library(ggplot2)
+library(msm)
+library(patchwork)
 
-###
-### Load/Install required packages and functions
-###
+# GLM - probit pprb
+source("src/probit.pprb.R")
 
-required.packages=c("ContourFunctions",
-                    "doParallel",
-                    "laGP",
-                    "lattice",
-                    "msm",
-                    "RColorBrewer",
-                    "scatterplot3d")
+# GLM - probit link
+source("src/probit.reg.mcmc.R")
 
-lapply(required.packages,install.packages,character.only=TRUE)
-lapply(required.packages,library,character.only=TRUE)
+# Simulate data ================================================================
 
-###
-### Functions
-###
+# Set the RNG seed
+set.seed(1701)
 
-## GLM - probit pprb
-source("probit.pprb.R")
+# Size of full domain 
+N <- 100
 
-## GLM - probit link
-source("probit.reg.mcmc.R")
+# Size of initial sample
+n <- 10
 
-###
-### Dimensions
-###
+# Parameters
+betatrue <- matrix(c(0.0, 0.5), nrow = 2)#rnorm(2) %>% matrix(2)
 
-nc=5
-nr=5
-N=nc*nr
+# Generating data
+data <- data.frame(loc = 1:N, x = rnorm(N, 0, 3)) %>%
+  mutate(mu = rnorm(N, betatrue[1] + betatrue[2] * x, 1),
+         p = pnorm(betatrue[1] + betatrue[2] * x),
+         y = ifelse(mu >= 0, 1, 0),
+         K1 = loc %in% sample(1:N, n),
+         lat = rep(1:10, 10),
+         lon = rep(1:10, each = 10))
 
-###
-### Parameters
-###
+# Design matrix for matrix math
+X <- cbind(1, data$x)
 
-beta0=rnorm(1)
-beta1=rnorm(1)
-beta=beta.truth=matrix(c(beta0,beta1),2)
+# Fit model ====================================================================
 
-###
-### Covariates
-###
+# Beta priors
+beta.mn <- matrix(0, 2, 1)
+beta.var <- 2.25
 
-X.all=cbind(1,rnorm(N,0,3))
-mu=rnorm(N,X.all%*%beta,1)
+# MCMC
+n.iter <- 100000
 
-###
-### Response
-###
+chain <- probit.reg.mcmc(subset(data, K1 == 1),
+                         beta.mn,
+                         beta.var,
+                         n.iter)
 
-Y.all=ifelse(mu>=0,1,0)
+beta.samp <- data.frame(chain$beta.save)
+names(beta.samp) <- c("beta0", "beta1")
+beta.samp$iter <- c(1:n.iter)
 
-###
-### Sample data
-###
+# Calculate posterior predictive distributions
+ppd <- ddply(beta.samp, .(iter), summarise,
+             mu = beta0 + beta1 * data$x,
+             mu.ppd = rnorm(N, mu, 1),
+             yhat = ifelse(mu.ppd >= 0, 1, 0),
+             p = pnorm(mu),
+             x = data$x,
+             loc = c(1:N))
 
-n=10
-sample1=sort(sample(1:N,n))
-y.orig=Y.all[sample1]
-X1=X.all[sample1,]
+variances <- ddply(ppd, .(loc), summarise, 
+                   vary = var(yhat), 
+                   varcond = mean(p * (1 - p)) + var(p),
+                   x = mean(x), 
+                   p = mean(p))
 
-#########################################################################
-### Fit model
-#########################################################################
+ggplot(variances, aes(x, vary)) + 
+  geom_point() + 
+  geom_line(aes(x, varcond))
 
-beta.mn=matrix(0,2,1)
-beta.var=2.25
-n.iter=100000
-model.output=probit.reg.mcmc(y=y.orig,
-                             X=X1,
-                             beta.mn,
-                             beta.var,
-                             n.iter)
-beta.samp=model.output$beta.save
+# Identifying optimal design ===================================================
 
-###
-### Plot MCMC output
-###
+# Number of new samples
 
-par(mfrow=c(2,2))
-plot(density(beta.samp[,1]),type='l',xlab='Iteration',ylab="beta0",main="")
-abline(v=beta0,col=4)
-plot(density(beta.samp[,2]),type='l',xlab='Iteration',ylab="beta1",main="")
-abline(v=beta1,col=4)
-plot((beta.samp[,1]),type='l',xlab='Iteration',ylab="beta0")
-abline(h=beta0,col=4)
-plot((beta.samp[,2]),type='l',xlab='Iteration',ylab="beta1")
-abline(h=beta1,col=4)
+n.new <- 1
 
-###
-### Calculate posterior predictive distribution (ppd) of mu
-###
+# Unsampled sites
 
-mu.ppd=matrix(rnorm(n.iter*N,mean=X.all%*%t(beta.samp),sd=1),N,n.iter)
+unsampled <- which(data$K1 == 0)
 
-###
-### Calculate ppd of y
-###
+# All possible combinations of unsampled sites (i.e., all designs)
 
-y.ppd=ifelse(mu.ppd>=0,1,0)
-y.ppd.var1=apply(y.ppd,1,var)
+D <- combn(unsampled, n.new)
+M <- dim(D)[2]
 
-#########################################################################
-### Where to sample new data?
-#########################################################################
+# Generating new data
+pred <- ddply(ppd, .(loc), summarise,
+                p.pred = mean(yhat),
+                y.pred = ifelse(p.pred > 0.5, 1, 0),
+                score = NA)
 
-###
-### Number of new samples
-###
-
-new.samples=1
-
-###
-### Unsampled sites
-###
-
-unsampled=(1:N)[!(1:N%in%sample1)]
-
-###
-### All possible combinations of unsampled sites
-###
-
-D=t(combn(unsampled,new.samples))
-M=dim(D)[1]
-
-###
-### Vector to store scores of each sample
-###
-
-score=rep(NA,M)
-
-#########################################################################
-### Loop over all designs
-#########################################################################
-
-##
-## Parallel computation
-##
-
+# Loop over all designs
+score <- rep(NA, M)
 registerDoParallel(cores=detectCores())
-score=foreach(d=1:M,.combine='c',.export=c('probit.pprb')) %dopar%{
+
+updates <- foreach(d=1:M, .export=c('probit.pprb')) %do% {
 
     cat(round(d/M*100),"% - ")
 
-    ##
-    ## y.ppd of new sample
-    ##
-
-    p.pred=apply(matrix(y.ppd[D[d,],],new.samples,n.iter),1,mean)
-    y.pred=ifelse(p.pred>0.5,1,0)
-    X.pred=X.all[D[d,],]
-
-    ##
-    ## Update model with posterior preds as new data
-    ##
-
-    model.output3=probit.pprb(y.pred,X.pred,beta.samp)
-
-    ##
-    ## Calculate new score
-    ##
-
-    beta.samp.new=model.output3$beta.save
-    p.ppd=pnorm(matrix(X.all%*%t(beta.samp.new), N, n.iter))
-    var.p.ppd=p.ppd*(1-p.ppd)
-    sum.var.p=apply(var.p.ppd,2,sum)
-    score[d]=mean(sum.var.p)
-}
-
-tick=Sys.time()
-tick-tock
-
-###
-### Color palatte
-###
-
-SpectralColors=colorRampPalette(brewer.pal(11, "Spectral"))
-color=SpectralColors(length(score))
-
-if(new.samples==2){
-    summary=cbind(X.all[D[,1],2],X.all[D[,2],2],score)
-    summary=summary[order(summary[,3]),]
-
-    ##
-    ## View results graphically
-    ##
-
-    par(mfrow=c(1,1))
-    plot(x=summary[,1],y=summary[,2],col=color,pch=16)
-    cf_data(x=summary[,1],y=summary[,2],z=summary[,3],
-            bar=TRUE,
-            color.palette=topo.colors,
-            with_lines=TRUE)
-}
-
-if(new.samples==1){
-    summary=cbind(X.all[D[,1],2],score)
-    summary=summary[order(summary[,2]),]
-
-    ##
-    ## View results graphically
-    ##
-
-    quartz()
-    par(mfrow=c(2,1))
-
-    ##
-    ## Plot 1
-    ##
-
-    X1=seq(-10,10,0.1)
-    X=cbind(1,X1)
-    plot(x=summary[,1],
-         y=summary[,2],
-         xlim=range(X1),
-         col=color,
-         pch=16,
-         xlab="X-value",
-         ylab="Score"
-         )
-    tmp=summary[order(summary[,1]),]
-    lines(tmp[,1],tmp[,2],col=2)
-    low.score=summary[,1][which(summary[,2]==min(summary[,2]))]
-    abline(v=low.score,col=4)
-
-    ##
-    ## Plot 2
-    ##
-
-    beta=apply(beta.samp,2,quantile,0.5)
-    plot(X1,pnorm(X%*%beta),xlim=range(X1),ylim=c(0,1),type='l')
-    ind=round(seq(1,n.iter,length.out=300))
-    for(i in ind){
-        beta=beta.samp[i,]
-        lines(X1,pnorm(X%*%beta),xlim=range(X1),ylim=c(0,1),type='l',
-              col=rgb(0,0,0,.1))
-        abline(v=low.score,col=4)
+    # Update model with ypred
+    y.pred <- subset(pred, loc == D[d])$y.pred
+    X.pred <- subset(data, loc == D[d])$x
+    updated <- probit.pprb(y.pred, X.pred, chain$beta.save)
+    
+    # Compute expected total predictive variance
+    p <- X %*% t(updated$beta.save) %>%
+      pnorm()
+    
+    vary <- rep(0, N)
+    
+    for(i in 1:N){
+      yhat <- rbinom(n.iter, 1, p[i, ])
+      vary[i] <- var(yhat)
     }
+    
+    # meanvar <- (p * (1 - p)) %>% apply(1, mean)
+    # varmean <- p %>% apply(1, var)
+    # score[d] <- sum(meanvar + varmean)
+    
+    score[d] <- sum(vary)
+    
+    return(updated$beta.save)
 }
 
+# Proccess output ==============================================================
 
+# Selecting optimal design
+scores <- data[D, ] %>% cbind(score)
+dopt <- which.min(scores$score)
+xopt <- scores$x[which.min(scores$score)]
+opt <- scores[which.min(scores$score), ]
+
+# Processing posterior of p and related functions of uncertainty
+ppd %>% 
+  mutate(var = p * (1 - p)) %>% 
+  ddply(.(loc), summarise, 
+        med = median(p),
+        low = quantile(p, 0.025),
+        high = quantile(p, 0.975),
+        range = high - low,
+        varp = var(p),
+        var = mean(var)) %>% 
+  join(scores) -> scores
+
+# Plots ========================================================================
+
+# Initial fit
+ppd %>% 
+  ggplot(aes(x, p)) + 
+  stat_summary(alpha = 0.2, color = "gray",  
+               fun.min = function(z) quantile(z, 0.025), 
+               fun.max = function(z) quantile(z, 0.975),
+               geom = "ribbon") +
+  stat_summary(fun = "median", geom = "line") + 
+  geom_point(data = subset(data, K1 == 1), aes(x, y, shape = factor(y)), size = 2) + 
+  scale_shape_manual(values = c(1, 19), guide = FALSE) + 
+  geom_vline(xintercept = xopt, linetype = 2) +
+  theme_classic() +
+  ggtitle("A") -> fig1a
+
+# Initial sampling locations
+data %>% 
+  ggplot(aes(lon, lat, fill = x)) + 
+  geom_raster() +
+  scale_fill_viridis_c(option = "E") + 
+  geom_point(aes(lon, lat, shape = factor(y)), data = subset(data, K1), size = 3) +
+  scale_shape_manual("y", values = c(1, 19)) + 
+  theme_classic() + 
+  scale_y_continuous("northing", expand = c(0, 0)) + 
+  scale_x_continuous("easting", expand = c(0, 0)) + 
+  theme(axis.text = element_blank()) + 
+  ggtitle("B") -> fig1b
+
+# Scores by x
+scores %>% 
+  ggplot(aes(x, score)) + 
+  geom_line(alpha = 0.5) +
+  geom_point(aes(color = score)) + 
+  scale_color_viridis_c(option = "B", guide = FALSE) + 
+  geom_vline(xintercept = xopt, linetype = 2) + 
+  geom_rug(data = subset(data, K1 == 1), aes(x = x), inherit.aes = FALSE) +
+  ylab("design criterion") + 
+  theme_classic() + 
+  ggtitle("C") -> fig1c
+
+# Map of scores
+scores %>% 
+  ggplot(aes(lon, lat, fill = score)) + 
+  geom_raster() +
+  scale_fill_viridis_c("design\ncriterion", option = "B") + 
+  geom_point(aes(lon, lat, shape = factor(y)), data = subset(data, K1), size = 3, inherit.aes = FALSE) +
+  scale_shape_manual(values = c(1, 19), guide = FALSE) + 
+  geom_point(aes(lon, lat), data = subset(scores, loc == D[dopt]), color = "white", shape = 4, size = 3) + 
+  theme_classic() + 
+  scale_y_continuous("northing", expand = c(0, 0)) + 
+  scale_x_continuous("easting", expand = c(0, 0)) + 
+  theme(axis.text = element_blank()) + 
+  ggtitle("D") -> fig1d
+
+pdf(file = "output/fig1.pdf", width = 7, height = 6)
+
+fig1a + fig1b + fig1c + fig1d + plot_layout(ncol = 2)
+
+dev.off()

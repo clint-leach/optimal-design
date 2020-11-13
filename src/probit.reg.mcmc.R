@@ -1,4 +1,4 @@
-probit.reg.mcmc=function(y,X,beta.mn,beta.var,n.iter){
+probit.reg.mcmc <- function(data, beta.mn, beta.var, n.iter){
 
     ##
     ##  Subroutines
@@ -17,9 +17,10 @@ probit.reg.mcmc=function(y,X,beta.mn,beta.var,n.iter){
     ##  Preliminary Variables
     ##
 
-    X=as.matrix(X)
-    y=as.vector(y)
-    n=length(y)
+    y <- data$y
+    n <- length(y)
+    
+    X <- cbind(rep(1, n), data$x) 
     l=dim(X)[2]
 
     beta.save=matrix(0,n.iter,l)
@@ -69,7 +70,7 @@ probit.reg.mcmc=function(y,X,beta.mn,beta.var,n.iter){
         ##
 
         p=pnorm(X%*%beta)
-
+        
         ##
         ## Save Samples
         ##
