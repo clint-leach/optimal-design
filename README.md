@@ -8,14 +8,14 @@ Leach, Clinton B., Perry J. Williams, Joseph M. Eisaguirre, Jamie N. Womble, Mic
 
 ## File list
 
-output/data.rds
-scripts/plots.R
-src/designs.jl
-src/example.jl
-src/probit.reg.jl
-optimal-design.Rproj
-LICENSE
-README.md
+`output/data.rds`  
+`scripts/plots.R`  
+`src/designs.jl`  
+`src/example.jl`  
+`src/probit.reg.jl`  
+`optimal-design.Rproj`  
+`LICENSE`  
+`README.md`
 
 ## Description
 
