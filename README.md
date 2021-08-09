@@ -1,3 +1,9 @@
+
+
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.5172768.svg)](https://doi.org/10.5281/zenodo.5172768)
+
+
+
 # optimal-design
 
 Example code for using recursive Bayesian computation in optimal design, using simulated data and binary regression. 
